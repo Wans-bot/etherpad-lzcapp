@@ -1,0 +1,19 @@
+package: cloud.lazycat.app.etherpad
+version: 1.0.0-4
+name: Etherpad
+description: 实时多人协同编辑的记事本，打开即用，中文界面自动识别。
+author: etherpad
+license: Apache-2.0
+homepage: https://etherpad.org
+locales:
+  zh-CN:
+    name: Etherpad 协同记事本
+    description: 实时多人协同编辑的记事本，打开即用，无需注册，中文界面自动识别。复制链接即可多人同时编辑，数据自动保存。
+  en-US:
+    name: Etherpad
+    description: >-
+      Real-time collaborative document editor. Open and start writing, no
+      account needed, share the link to collaborate with others.
+permissions:
+  required:
+    - net.internet

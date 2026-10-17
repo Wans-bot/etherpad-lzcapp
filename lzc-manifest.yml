@@ -1,0 +1,226 @@
+usage: |
+  一个实时多人协同编辑文档的记事本（Etherpad）。
+  打开即可新建文档，复制链接给好友就能多人同时编辑，中文界面自动识别。
+
+  使用说明：
+  1. 打开应用后，点击「新建文档」即可开始编辑
+  2. 地址栏的链接就是文档地址，把链接发给别人即可协同编辑
+  3. 文字会自动实时保存，刷新/换设备都不会丢
+  4. 文档数据存放在 /lzcapp/var 下，升级/重启不会丢失
+
+  提示：
+  - 无需注册账号，打开即用（完全匿名）
+  - 如需管理功能（改标题/皮肤等），可在地址后加 /admin 进入管理页
+application:
+  subdomain: etherpad
+  public_path:
+    - /manifest.json
+    - /locales.json
+    - /locales/*
+  upstreams:
+    - location: /
+      backend: http://etherpad:9001
+      disable_auto_health_checking: true
+      fix_websocket_header: true
+  injects:
+    - id: home-to-user-notebook
+      'on': request
+      auth_required: false
+      when:
+        - /
+      do:
+        - src: |
+            // Keep the entry pad stable across devices and transferred sessions.
+            // A user-id-derived pad changed when the copied link was opened on a new device.
+            const padId = "notebook-shared";
+            if (ctx.request.path !== "/") return;
+            ctx.response.send(302, "", { location: "/p/" + padId });
+    - id: lazycat-file-bridge
+      'on': request
+      auth_required: false
+      when:
+        - /__lazycat_file_bridge/*
+      do:
+        - src: |
+            const bridgePrefix = "/__lazycat_file_bridge";
+            const requestHost = String(ctx.request.host || "")
+              .split(":")[0]
+              .toLowerCase();
+            const firstDot = requestHost.indexOf(".");
+            const method = String(ctx.request.method || "").toUpperCase();
+
+            if (
+              firstDot <= 0 ||
+              !requestHost.endsWith(".heiyu.space") ||
+              !["GET", "HEAD", "PUT"].includes(method)
+            ) {
+              ctx.response.send(
+                ["GET", "HEAD", "PUT"].includes(method) ? 400 : 405,
+                "Invalid LazyCat file bridge request",
+              );
+              return;
+            }
+
+            const boxDomain = requestHost.slice(firstDot + 1);
+            const fileOrigin = "https://file." + boxDomain;
+            const targetPath =
+              "/files/home" + ctx.request.path.slice(bridgePrefix.length);
+
+            ctx.headers.del("Origin");
+            ctx.headers.del("Referer");
+            ctx.proxy.to(fileOrigin, {
+              path: targetPath,
+              query: ctx.request.raw_query,
+              use_target_host: true,
+              timeout_ms: 120000,
+              on_fail: "error",
+            });
+    - id: open-save-chooser
+      'on': browser
+      when:
+        - /*
+      do:
+        - src: >-
+            file:///lzcapp/pkg/content/lazycat-injects/lzc-file-chooser-inject.js
+          params:
+            diskRoot: /_lzc/files/home
+            fileBridgeRoot: /__lazycat_file_bridge
+            fallbackMime: application/octet-stream
+            locale: auto
+            hooks:
+              fileSystemAccess: true
+              fileInput: true
+              downloadAnchor: true
+            text:
+              zh-CN:
+                openTitle: 打开
+                saveTitle: 保存
+                cloudTab: 网盘文件
+                localTab: 本地文件
+                openLazyCat: 从懒猫打开
+                saveLazyCat: 保存至懒猫
+                cancel: 取消
+              en-US:
+                openTitle: Open
+                saveTitle: Save
+                cloudTab: Cloud files
+                localTab: Local files
+                openLazyCat: Open from LazyCat
+                saveLazyCat: Save to LazyCat
+                cancel: Cancel
+    - id: etherpad-export-chooser
+      'on': browser
+      when:
+        - /*
+      do:
+        - src: >-
+            file:///lzcapp/pkg/content/lazycat-injects/etherpad-export-chooser.js
+services:
+  etherpad:
+    image: registry.lazycat.cloud/wans/etherpad/etherpad:35d3a7a6a4c3bbdd
+    user: root
+    environment:
+      - PORT=9001
+      - TRUST_PROXY=true
+      - PUBLIC_URL=https://${LAZYCAT_APP_DOMAIN}
+      - ADMIN_SECRET=lzc-etherpad-admin-secret-2026
+      - USER_SECRET=lzc-etherpad-user-secret-2026
+    binds:
+      - /lzcapp/var/data:/opt/etherpad-lite/var
+    setup_script: >
+      SET=/opt/etherpad-lite/settings.json
+
+      TSC=/opt/etherpad-lite/src/node/utils/Settings.ts
+
+      L10N=/opt/etherpad-lite/src/static/js/l10n.ts
+
+      ZH=/opt/etherpad-lite/src/locales/zh-hans.json
+
+      if grep -q '"socketTransportProtocols" : \["websocket", "polling"\]'
+      "$SET"; then
+        sed -i 's/"socketTransportProtocols" : \["websocket", "polling"\]/"socketTransportProtocols" : ["polling"]/' "$SET"
+      fi
+
+      if ! grep -q 'pollingOnlyMarker' "$TSC"; then
+        node -e '
+          const fs = require("fs");
+          const f = "/opt/etherpad-lite/src/node/utils/Settings.ts";
+          let s = fs.readFileSync(f, "utf8");
+          const old = "if (!settings.socketTransportProtocols.includes(\"websocket\") || !settings.socketTransportProtocols.includes(\"polling\")) {";
+          if (s.includes(old)) {
+            s = s.replace(old, "if (false && (!settings.socketTransportProtocols.includes(\"websocket\") || !settings.socketTransportProtocols.includes(\"polling\"))) { // pollingOnlyMarker");
+            fs.writeFileSync(f, s);
+          }
+        '
+      fi
+
+      # 强制默认中文：无 language cookie 时 zh-hans 优先于浏览器语言（否则英文浏览器打开即英文）
+
+      if ! grep -q 'lzcForceZhDefault' "$L10N"; then
+        node -e '
+          const fs = require("fs");
+          const f = "/opt/etherpad-lite/src/static/js/l10n.ts";
+          let s = fs.readFileSync(f, "utf8");
+          const old = "html10n.localize([regexpLang, navigator.language, \x27en\x27]);";
+          const repl = "html10n.localize(regexpLang ? [regexpLang, navigator.language, \x27en\x27] : [\x27zh-hans\x27, navigator.language, \x27en\x27]); // lzcForceZhDefault";
+          if (s.includes(old)) {
+            s = s.replace(old, repl);
+            fs.writeFileSync(f, s);
+          }
+        '
+      fi
+
+      # 补齐 zh-hans.json 缺失的界面 key（模板引用但语言包没有 -> 显示英文）
+
+      if ! grep -q 'lzcZhKeysPatched' "$ZH"; then
+        node -e '
+          const fs = require("fs");
+          const f = "/opt/etherpad-lite/src/locales/zh-hans.json";
+          const zh = JSON.parse(fs.readFileSync(f, "utf8"));
+          const add = {
+            "index.code": "代码",
+            "pad.editor.skipToContent": "跳到编辑器",
+            "pad.editor.toolbar.actions": "记事本操作工具栏",
+            "pad.editor.toolbar.formatting": "格式工具栏",
+            "pad.editor.toolbar.showMore": "显示更多工具栏按钮",
+            "pad.historyMode.banner": "正在查看历史",
+            "pad.historyMode.controlsLabel": "记事本历史控件",
+            "pad.historyMode.return": "返回实时编辑",
+            "pad.importExport.exportetherpada.title": "导出为 Etherpad",
+            "pad.importExport.exporthtmla.title": "导出为 HTML",
+            "pad.importExport.exportopena.title": "导出为 ODF（开放文档格式）",
+            "pad.importExport.exportpdfa.title": "导出为 PDF",
+            "pad.importExport.exportplaina.title": "导出为纯文本",
+            "pad.importExport.exportworda.title": "导出为 Microsoft Word",
+            "lzcZhKeysPatched": true
+          };
+          let added = 0;
+          for (const [k, v] of Object.entries(add)) if (!(k in zh)) { zh[k] = v; added++; }
+          fs.writeFileSync(f, JSON.stringify(zh, null, 2) + "\n");
+          if (added === 0 && zh.lzcZhKeysPatched) process.exit(0);
+        '
+      fi
+
+      # 设置弹窗标题 fallback 改中文（html10n 对隐藏元素不翻译 fallback 文本，
+
+      # 直接改模板兜底文本保证中文）。幂等：已含「设置」则不重复改。
+
+      if ! grep -q '设置</h1>' /opt/etherpad-lite/src/templates/pad.html; then
+        node -e '
+          const fs = require("fs");
+          const f = "/opt/etherpad-lite/src/templates/pad.html";
+          let h = fs.readFileSync(f, "utf8");
+          h = h.replace(/(<h1[^>]*data-l10n-id="pad\.settings\.title"[^>]*>)Settings(<\/h1>)/, "$1设置$2");
+          fs.writeFileSync(f, h);
+        '
+      fi
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e
+          "require('http').get('http://127.0.0.1:9001/health',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
