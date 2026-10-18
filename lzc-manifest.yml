@@ -117,7 +117,8 @@ application:
             file:///lzcapp/pkg/content/lazycat-injects/etherpad-export-chooser.js
 services:
   etherpad:
-    image: registry.lazycat.cloud/wans/etherpad/etherpad:35d3a7a6a4c3bbdd
+    # upstream: docker.io/etherpad/etherpad:3.3.8
+    image: registry.lazycat.cloud/wans/etherpad/etherpad:84df29b7486d7443
     user: root
     environment:
       - PORT=9001
@@ -136,12 +137,13 @@ services:
 
       ZH=/opt/etherpad-lite/src/locales/zh-hans.json
 
-      if grep -q '"socketTransportProtocols" : \["websocket", "polling"\]'
-      "$SET"; then
+      if grep -q '"socketTransportProtocols" : \["websocket", "polling"\]' "$SET"; then
+
         sed -i 's/"socketTransportProtocols" : \["websocket", "polling"\]/"socketTransportProtocols" : ["polling"]/' "$SET"
       fi
 
       if ! grep -q 'pollingOnlyMarker' "$TSC"; then
+
         node -e '
           const fs = require("fs");
           const f = "/opt/etherpad-lite/src/node/utils/Settings.ts";
@@ -157,6 +159,7 @@ services:
       # 强制默认中文：无 language cookie 时 zh-hans 优先于浏览器语言（否则英文浏览器打开即英文）
 
       if ! grep -q 'lzcForceZhDefault' "$L10N"; then
+
         node -e '
           const fs = require("fs");
           const f = "/opt/etherpad-lite/src/static/js/l10n.ts";
@@ -173,6 +176,7 @@ services:
       # 补齐 zh-hans.json 缺失的界面 key（模板引用但语言包没有 -> 显示英文）
 
       if ! grep -q 'lzcZhKeysPatched' "$ZH"; then
+
         node -e '
           const fs = require("fs");
           const f = "/opt/etherpad-lite/src/locales/zh-hans.json";
@@ -206,6 +210,7 @@ services:
       # 直接改模板兜底文本保证中文）。幂等：已含「设置」则不重复改。
 
       if ! grep -q '设置</h1>' /opt/etherpad-lite/src/templates/pad.html; then
+
         node -e '
           const fs = require("fs");
           const f = "/opt/etherpad-lite/src/templates/pad.html";
@@ -214,12 +219,12 @@ services:
           fs.writeFileSync(f, h);
         '
       fi
+
     healthcheck:
       test:
         - CMD-SHELL
         - >-
-          node -e
-          "require('http').get('http://127.0.0.1:9001/health',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+          node -e "require('http').get('http://127.0.0.1:9001/health',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
       interval: 30s
       timeout: 10s
       retries: 6
